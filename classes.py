@@ -52,7 +52,7 @@ class UIHelper:
 
     @staticmethod
     def adjust_entry_bg_color(entry_widget, wallet_name, wallet_colors):
-        color = wallet_colors.get(wallet_name, "lightgrey")
+        color = wallet_colors.get(wallet_name, "lightgrey")  # Default to lightgrey if no match
         entry_widget.config(bg=color)
         UIHelper.adjust_font_color(entry_widget, color)
 
@@ -69,16 +69,118 @@ class UIHelper:
         return shades
 
 
+class EntryCreator:
+    def __init__(self, root, config, on_focus_in, on_focus_out):
+        self.root = root
+        self.config = config
+        self.on_focus_in = on_focus_in
+        self.on_focus_out = on_focus_out
+
+    def create_entry(self, row, col, column_id, entry_data, entries, enforce_dollar_sign, on_enter):
+        entry = tk.Entry(self.root, font=("Arial", 14, "bold"), fg="black", bg="lightgrey", justify="center", bd=0,
+                         relief="flat")
+        entry_height = (self.config.screen_height - 2 * self.config.strip_height) / 30
+        col_width_middle = self.config.column_width_middle
+        purple_shades = UIHelper.generate_purple_shades(30)
+        row_color = purple_shades[row]
+        entry.config(bg=row_color)
+        entry.place(x=int(col * col_width_middle), y=int(self.config.strip_height + row * entry_height),
+                    width=int(col_width_middle), height=int(entry_height))
+        entry.column_idx = column_id
+        saved_value = entry_data.get(f"row_{row}_column_{column_id}", "")
+        saved_value_cleaned = ""
+        if saved_value:
+            saved_value_cleaned = saved_value.replace("$", "").replace(",", "")
+            if column_id == 6:
+                try:
+                    saved_value = f"${float(saved_value_cleaned):,.2f}"
+                except ValueError:
+                    saved_value = "$0"
+            elif column_id == 7:
+                try:
+                    saved_value = f"{float(saved_value_cleaned):,.2f}"
+                except ValueError:
+                    saved_value = "0"
+        if saved_value_cleaned:
+            saved_value = DecimalHelper(self.config).apply_decimal_threshold(float(saved_value_cleaned))
+        if column_id == 6 and not saved_value.startswith("$"):
+            saved_value = "$" + saved_value
+        entry.insert(0, saved_value)
+        entries.append(entry)
+        entry.bind("<Return>", partial(on_enter, row=row, column=column_id))
+        entry.bind("<FocusOut>", lambda event: self.enforce_dollar_sign(entry))  # Enforce dollar sign
+        UIHelper.adjust_font_color(entry, row_color)
+
+    def enforce_dollar_sign(self, entry):
+        text = entry.get()
+        column_idx = getattr(entry, 'column_idx', None)
+
+        if column_idx == 6:
+            self.format_dollar_entry(entry, text)
+        elif column_idx == 7:
+            self.format_general_entry(entry, text)
+
+        entry.icursor(tk.END)
+
+    def format_dollar_entry(self, entry, text):
+        if not text.startswith("$"):
+            text = "$" + text
+        raw_text = text[1:].replace(",", "")
+        try:
+            if raw_text.replace(".", "", 1).isdigit():
+                value = float(raw_text)
+                formatted_text = f"${value:,.8f}".rstrip('0').rstrip('.')
+                if value == 0:
+                    formatted_text = "$0"
+            else:
+                formatted_text = "$"
+        except ValueError:
+            formatted_text = "$"
+
+        entry.delete(0, tk.END)
+        entry.insert(0, formatted_text)
+
+    def format_general_entry(self, entry, text):
+        raw_text = text.replace(",", "")
+        try:
+            if raw_text.replace(".", "", 1).isdigit():
+                value = float(raw_text)
+                formatted_text = f"{value:,.8f}".rstrip('0').rstrip('.')
+                if formatted_text == "":
+                    formatted_text = "0"
+            else:
+                formatted_text = ""
+        except ValueError:
+            formatted_text = ""
+
+        entry.delete(0, tk.END)
+        entry.insert(0, formatted_text)
+
+
+class DecimalHelper:
+    def __init__(self, config):
+        self.config = config
+        self.thresholds = [
+            (1, 2), (0.01, 3), (0.001, 4), (0.0001, 5), (0.00001, 6), (0.000001, 7), (0.0000001, 8)
+        ]
+
+    def apply_decimal_threshold(self, value):
+        for threshold_value, decimals in self.thresholds:
+            if value >= threshold_value:
+                formatted_value = f"{value:,.{decimals}f}"
+                return formatted_value.rstrip('0').rstrip('.')
+        return f"{value:,.8f}".rstrip('0').rstrip('.')
+
+
 class UIGridHelper:
     def __init__(self, root, config, on_focus_in, on_focus_out):
         self.root = root
         self.config = config
         self.on_focus_in = on_focus_in
         self.on_focus_out = on_focus_out
-        self.existing_labels = {}
+        self.existing_labels = {}  # Initialize the dictionary to store existing labels
 
     def create_default_label(self, row, col, row_color):
-        """Create a default label for the grid at a given row and column."""
         entry_height = (self.config.screen_height - 2 * self.config.strip_height) / 30
         bg_color = "white" if (row + col) % 2 == 0 else "lightgrey"
         label = tk.Label(self.root, bg=bg_color, text=f"R{row + 1} C{col + 1}",
@@ -92,145 +194,80 @@ class UIGridHelper:
         UIHelper.adjust_font_color(label, bg_color)
 
     def create_value_label(self, row, col, text="$0", bg_color=None):
-        """Create or update a value label for a given row and column, with flashing background colors for price updates."""
         entry_height = (self.config.screen_height - 2 * self.config.strip_height) / 30
         col_width_middle = self.config.column_width_middle
         purple_shades = UIHelper.generate_purple_shades(30)
-
         if bg_color is None:
-            bg_color = purple_shades[row]  # Default background color
-
+            bg_color = purple_shades[row]
         label_key = (row, col)
-
         if label_key in self.existing_labels:
             label = self.existing_labels[label_key]
             label.config(text=text, bg=bg_color)
         else:
             label = tk.Label(self.root, bg=bg_color, text=text, font=("Arial", 15), fg="black", anchor="center")
-            x_position = col * col_width_middle
-            y_position = self.config.strip_height + row * entry_height
-            label.place(x=int(x_position), y=int(y_position), width=int(col_width_middle), height=int(entry_height))
+            label.place(x=int(col * col_width_middle), y=int(self.config.strip_height + row * entry_height),
+                        width=int(col_width_middle), height=int(entry_height))
             self.existing_labels[label_key] = label
-
         UIHelper.adjust_font_color(label, bg_color)
-
-        # Only animate if the price is updated and it's a valid price
         if text != "$0" and text != "Loading...":
             self.animate_price_update(row, col, text, label)
 
     def animate_price_update(self, row, col, text, price_label):
-        """Animate flashing background color effect for price updates (red, yellow, green)."""
-        # Apply flashing only for PRICE (column 2), BREAK EVEN (column 3), BALANCE (column 4), and PROFIT (column 5)
         if col not in [2, 3, 4, 5]:
             return
-
-        flash_color = "yellow"  # Default color for price updates
+        flash_color = "yellow"
         if not text or text == "Loading..." or text == "Invalid" or text == "Error":
             flash_color = "yellow"
         else:
             previous_price = self.config.entry_data_middle.get(f"row_{row}_price", None)
-
             if previous_price is not None:
                 try:
-                    current_price = float(text[1:])  # Remove "$" and convert to float
+                    current_price = float(text[1:])
                     previous_price_value = previous_price if isinstance(previous_price, float) else float(previous_price[1:])
-
                     if current_price > previous_price_value:
-                        flash_color = "green"  # If the price increased, show green
+                        flash_color = "green"
                     elif current_price < previous_price_value:
-                        flash_color = "red"  # If the price decreased, show red
+                        flash_color = "red"
                     else:
-                        flash_color = "yellow"  # No change, show yellow
+                        flash_color = "yellow"
                 except ValueError:
-                    flash_color = "yellow"  # Default to yellow if there's a value error
+                    flash_color = "yellow"
             else:
-                flash_color = "yellow"  # Default to yellow if no previous price
-
+                flash_color = "yellow"
         original_color = price_label.cget("bg")
         price_label.config(bg=flash_color)
-        self.root.after(200, lambda: price_label.config(bg=original_color))  # Revert after 200ms
-
-        # Update the price in the entry data for future comparisons
+        self.root.after(75, lambda: price_label.config(bg=original_color))
         self.config.entry_data_middle[f"row_{row}_price"] = text
 
-    def create_entry(self, row, col, column_id, entry_data, entries, enforce_dollar_sign, on_enter):
-        entry = tk.Entry(self.root, font=("Arial", 14, "bold"), fg="black", bg="lightgrey", justify="center", bd=0,
-                         relief="flat")
-        entry_height = (self.config.screen_height - 2 * self.config.strip_height) / 30
-        col_width_middle = self.config.column_width_middle
-        purple_shades = UIHelper.generate_purple_shades(30)
-
-        row_color = purple_shades[row]  # Here, row_color is determined from purple_shades
-        entry.config(bg=row_color)
-
-        x_position = col * col_width_middle
-        y_position = self.config.strip_height + row * entry_height
-
-        # Adjust the column widths
-        if col == 8:
-            col_width_middle = self.root.winfo_width() - (8 * self.config.column_width_middle)
-        elif col == 7:
-            col_width_middle = self.root.winfo_width() - ((7) * self.config.column_width_middle) - (
-                    self.root.winfo_width() - (8 * self.config.column_width_middle))
-        elif col == 6:
-            col_width_middle = self.root.winfo_width() - ((6) * self.config.column_width_middle) - (
-                    self.root.winfo_width() - (7 * self.config.column_width_middle))
-
-        entry.place(x=int(x_position), y=int(y_position), width=int(col_width_middle), height=int(entry_height))
-
-        entry.column_idx = column_id
-
-        # Load the saved value if available
-        if f"row_{row}_column_{column_id}" not in entry_data:
-            default_value = "$0" if column_id == 6 else "0"
-            entry.insert(0, default_value)
-        else:
-            saved_value = entry_data[f"row_{row}_column_{column_id}"]
-            if column_id == 6 and not saved_value.startswith("$"):
-                saved_value = "$" + saved_value
-            entry.insert(0, saved_value)
-
-        entries.append(entry)
-
-        # Bind event handlers
-        entry.bind("<Return>", partial(on_enter, row=row, column=column_id))
-        entry.bind("<KeyRelease>", enforce_dollar_sign)
-        entry.bind("<FocusIn>", partial(self.on_focus_in, entry=entry))
-
-        # Adjust font color
-        UIHelper.adjust_font_color(entry, row_color)
-
-    def enforce_dollar_sign(self, event):
-        entry = event.widget
-        text = entry.get()
-        if getattr(entry, 'column_idx', None) == 8:
-            return
-        if not text.startswith("$"):
-            entry.insert(0, "$")
-        text = entry.get()
-        clean_text = "$" + ''.join(c for c in text[1:] if c.isdigit())
-        if text != clean_text:
-            entry.delete(0, "end")
-            entry.insert(0, clean_text)
-        entry.icursor(len(entry.get()))
-
-    def create_wallet_entry_middle(self, row, col, entry_data_middle, wallet_colors,
-                                   entries, on_enter_middle, on_focus_out):
+    def create_wallet_entry_middle(self, row, col, entry_data_middle, wallet_colors, entries, on_enter_middle,
+                                   on_focus_out):
+        # Original entry creation logic
         entry = tk.Entry(self.root, font=("Arial", 12, "bold"), fg="black", bg="lightgrey", justify="center")
         entry.place(x=col * self.config.column_width_middle,
                     y=self.config.strip_height + row * (self.config.screen_height - 2 * self.config.strip_height) / 30,
                     width=self.config.column_width_middle,
                     height=(self.config.screen_height - 2 * self.config.strip_height) / 30)
-        entry_key = f"row_{row}_column_9_middle"
-        if entry_key in entry_data_middle:
-            entry.insert(0, entry_data_middle[entry_key] or "")
+
+        # Key for entry data retrieval
+        entry_key = f"row_{row}_column_8_middle"
+        saved_value = entry_data_middle.get(entry_key, "")
+        entry.insert(0, saved_value)
+
+        # Store the widget in entry_data_middle for future reference
+        entry_data_middle[f"row_{row}_column_8_widget"] = entry
         entries.append(entry)
-        entry.bind("<Return>", partial(on_enter_middle, row=row, column=9))
-        entry.bind("<FocusOut>", lambda event: on_focus_out(row=row, column=9, entry=entry))
+
+        # Bind the on_enter and on_focus_out events
+        entry.bind("<Return>", partial(on_enter_middle, row=row, column=8))
+        entry.bind("<FocusOut>", lambda event: on_focus_out(row=row, column=8, entry=entry))
         entry.bind("<FocusIn>", partial(self.on_focus_in, entry=entry))
-        wallet_name = entry.get().strip().upper()
+
+        # Apply background color based on wallet name
+        wallet_name = saved_value.strip().upper()
         color = wallet_colors.get(wallet_name, "lightgrey")
         entry.config(bg=color)
+
+        # Adjust font color based on background
         UIHelper.adjust_font_color(entry, color)
 
 
@@ -360,43 +397,60 @@ class DataHandler:
             return {}
         try:
             with open(file_path, "r", encoding="utf-8") as file:
-                return json.load(file)
-        except Exception as e:
-            print(f"Error loading data from {file_path}: {e}")
-        return {}
+                data = json.load(file)
+                return data
+        except Exception:
+            return {}
 
     def save_data(self, entry_data, grid_type='middle'):
         file_path = self.middle_grid_file_path if grid_type == 'middle' else self.bottom_grid_file_path
+        cleaned_data = {key: value for key, value in entry_data.items() if not isinstance(value, tk.Entry)}
+
+        for key, value in cleaned_data.items():
+            if "column_6" in key:
+                if isinstance(value, str) and not value.startswith("$"):
+                    cleaned_data[key] = f"${value}"
+
         try:
             with open(file_path, "w", encoding="utf-8") as file:
-                json.dump(entry_data, file, ensure_ascii=False, indent=4)
-        except Exception as e:
-            # Optional: Log errors in a quieter manner if needed
+                json.dump(cleaned_data, file, ensure_ascii=False, indent=4)
+        except Exception:
             pass
 
     def load_and_update(self, grid_type='middle', entries=None, fetch_prices=True):
         data = self.load_data(grid_type)
 
         for row in range(30):
-            for col in range(10):
+            for col in range(9):
                 entry_key = f"row_{row}_column_{col}"
-                if entry_key in data:
-                    value = data[entry_key]
-                    if col == 2:
-                        coin_name = data.get(f"row_{row}_column_0", "").strip()
-                        if coin_name and fetch_prices:
-                            price = self.binance_api.get_price(coin_name)
-                            if price:
-                                data[entry_key] = f"${price}"
-                                entries[row][col].delete(0, "end")
-                                entries[row][col].insert(0, f"${price}")
-                            else:
-                                data[entry_key] = "Invalid"
-                                entries[row][col].delete(0, "end")
-                                entries[row][col].insert(0, "Invalid")
-                        else:
-                            data[entry_key] = "loading..."
-                            entries[row][col].delete(0, "end")
-                            entries[row][col].insert(0, "loading...")
+                value = data.get(entry_key, "")
+
+                if value:
+                    if col == 6:
+                        if value.startswith("DEPOSITED $"):
+                            value = value[len("DEPOSITED $"):].strip()
+
+                        entries[row][col].delete(0, tk.END)
+                        entries[row][col].insert(0, f"DEPOSITED ${value}")
+
+                    elif col == 7:
+                        try:
+                            value = float(value.replace(",", "")) if isinstance(value, str) else float(value)
+                            formatted_value = f"{value:,.0f}"
+                        except ValueError:
+                            formatted_value = "0"
+                        entries[row][col].delete(0, tk.END)
+                        entries[row][col].insert(0, formatted_value)
+
+                    elif col == 8:
+                        if not isinstance(value, str):
+                            value = ""
+                        value = value.upper()
+                        entries[row][col].delete(0, tk.END)
+                        entries[row][col].insert(0, value)
+
+                    else:
+                        entries[row][col].delete(0, tk.END)
+                        entries[row][col].insert(0, value)
 
         self.save_data(data, grid_type)
